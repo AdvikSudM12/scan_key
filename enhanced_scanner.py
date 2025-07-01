@@ -46,7 +46,9 @@ class EnhancedGitHubOpenAIScanner:
         self.processed_repos_file = 'processed_repositories.json'
         
         # Загружаем кэш при инициализации
+        self.ensure_files_exist()
         self.load_cache()
+        self.load_valid_keys()
         
         # Множественные паттерны для поиска различных форматов OpenAI API ключей
         self.api_key_patterns = [
@@ -78,6 +80,64 @@ class EnhancedGitHubOpenAIScanner:
             print(f"⚠️ Ошибка загрузки кэша: {e}")
             self.processed_files = set()
             self.tested_keys = set()
+
+    def load_valid_keys(self):
+        """
+        Загружает существующие валидные ключи из файла результатов
+        """
+        try:
+            output_file = os.getenv('OUTPUT_FILE', 'enhanced_valid_openai_keys.json')
+            if os.path.exists(output_file):
+                with open(output_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    existing_keys = data.get('valid_keys', [])
+                    self.valid_keys.extend(existing_keys)
+                    
+                print(f"📄 Загружено {len(existing_keys)} существующих валидных ключей")
+            else:
+                print("📄 Файл результатов не найден, создастся при первом сохранении")
+                
+        except Exception as e:
+            print(f"⚠️ Ошибка загрузки валидных ключей: {e}")
+
+    def ensure_files_exist(self):
+        """
+        Проверяет существование необходимых файлов и создает их при необходимости
+        """
+        output_file = os.getenv('OUTPUT_FILE', 'enhanced_valid_openai_keys.json')
+        
+        # Создаем файл результатов если не существует
+        if not os.path.exists(output_file):
+            initial_data = {
+                'scan_info': {
+                    'timestamp': datetime.now().isoformat(),
+                    'total_keys_tested': 0,
+                    'valid_keys_found': 0,
+                    'files_processed': 0,
+                    'success_rate': "0%"
+                },
+                'valid_keys': []
+            }
+            try:
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(initial_data, f, indent=2, ensure_ascii=False)
+                print(f"✅ Создан файл результатов: {output_file}")
+            except Exception as e:
+                print(f"⚠️ Ошибка создания файла результатов: {e}")
+        
+        # Создаем файл кэша если не существует
+        if not os.path.exists(self.cache_file):
+            initial_cache = {
+                'processed_files': [],
+                'tested_keys': [],
+                'last_updated': datetime.now().isoformat()
+            }
+            try:
+                with open(self.cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(initial_cache, f, indent=2, ensure_ascii=False)
+                print(f"✅ Создан файл кэша: {self.cache_file}")
+            except Exception as e:
+                print(f"⚠️ Ошибка создания файла кэша: {e}")
 
     def save_cache(self):
         """
@@ -205,11 +265,16 @@ class EnhancedGitHubOpenAIScanner:
 
     def search_github_code(self, query: str, max_pages: int = 5, sort_by: str = "indexed") -> List[Dict]:
         """
-        Поиск кода в GitHub по запросу с улучшенной обработкой ошибок
+        Поиск кода в GitHub по запросу с улучшенной обработкой ошибок и проверкой лимитов
         """
         results = []
         
         for page in range(1, max_pages + 1):
+            # Проверяем лимиты перед каждым запросом
+            if not self.should_continue_scanning():
+                print(f"🛑 Остановка поиска из-за исчерпания лимитов API")
+                break
+            
             try:
                 url = f"https://api.github.com/search/code"
                 params = {
@@ -223,22 +288,28 @@ class EnhancedGitHubOpenAIScanner:
                 response = self.session.get(url, params=params)
                 
                 if response.status_code == 403:
+                    # Проверяем, не связано ли это с лимитами
+                    if 'rate limit' in response.text.lower():
+                        print(f"🛑 Достигнут лимит запросов для поиска")
+                        self.wait_for_rate_limit_reset('search')
+                        continue
+                    
                     reset_time = response.headers.get('X-RateLimit-Reset')
                     if reset_time:
                         reset_datetime = datetime.fromtimestamp(int(reset_time))
                         wait_time = (reset_datetime - datetime.now()).total_seconds()
-                        print(f"Лимит запросов. Ожидание {int(wait_time/60)} минут до {reset_datetime.strftime('%H:%M:%S')}")
+                        print(f"⏰ Лимит запросов. Ожидание {int(wait_time/60)} минут до {reset_datetime.strftime('%H:%M:%S')}")
                         time.sleep(min(wait_time, 3600))  # Максимум час ожидания
                     else:
                         time.sleep(60)
                     continue
                     
                 if response.status_code == 422:
-                    print(f"Слишком много результатов для запроса: {query}")
+                    print(f"❌ Слишком много результатов для запроса: {query}")
                     break
                     
                 if response.status_code != 200:
-                    print(f"Ошибка {response.status_code} для запроса: {query}")
+                    print(f"❌ Ошибка {response.status_code} для запроса: {query}")
                     break
                     
                 data = response.json()
@@ -246,7 +317,7 @@ class EnhancedGitHubOpenAIScanner:
                 if 'items' not in data:
                     break
                 
-                print(f"  Страница {page}: {len(data['items'])} файлов")
+                print(f"  📄 Страница {page}: {len(data['items'])} файлов")
                 results.extend(data['items'])
                 
                 if len(data['items']) < 100:
@@ -256,14 +327,14 @@ class EnhancedGitHubOpenAIScanner:
                 time.sleep(2 if self.github_token else 10)
                 
             except Exception as e:
-                print(f"Ошибка при поиске '{query}': {e}")
+                print(f"❌ Ошибка при поиске '{query}': {e}")
                 break
                 
         return results
 
     def get_file_content(self, file_info: Dict) -> str:
         """
-        Получение содержимого файла с улучшенной обработкой
+        Получение содержимого файла с улучшенной обработкой и проверкой лимитов
         """
         try:
             url = file_info.get('url')
@@ -273,17 +344,24 @@ class EnhancedGitHubOpenAIScanner:
             # Проверяем размер файла
             file_size = file_info.get('size', 0)
             if file_size > 1048576:  # 1MB
-                print(f"    Пропускаем большой файл ({file_size} байт)")
+                print(f"    📏 Пропускаем большой файл ({file_size} байт)")
                 return ""
                 
             response = self.session.get(url)
             
             if response.status_code == 403:
-                print("    Достигнут лимит API при получении файла")
-                time.sleep(60)
-                return ""
+                # Проверяем лимиты Core API
+                if 'rate limit' in response.text.lower():
+                    print("    🛑 Достигнут лимит Core API при получении файла")
+                    self.wait_for_rate_limit_reset('core')
+                    return ""
+                else:
+                    print("    ⚠️ Доступ к файлу ограничен (403)")
+                    time.sleep(60)
+                    return ""
                 
             if response.status_code != 200:
+                print(f"    ❌ Ошибка {response.status_code} при получении файла")
                 return ""
                 
             data = response.json()
@@ -293,7 +371,7 @@ class EnhancedGitHubOpenAIScanner:
                 return content
                 
         except Exception as e:
-            print(f"    Ошибка при получении файла: {e}")
+            print(f"    ❌ Ошибка при получении файла: {e}")
             
         return ""
 
@@ -395,6 +473,13 @@ class EnhancedGitHubOpenAIScanner:
         print(f"📊 Сортировка: {sort_by}")
         print(f"📄 Страниц на запрос: {max_pages_per_query}")
         
+        # Проверяем лимиты API перед началом сканирования
+        self.print_rate_limits()
+        
+        if not self.should_continue_scanning():
+            print("❌ Сканирование отменено из-за недостатка лимитов API")
+            return []
+        
         # Показываем статистику кэша
         cache_stats = self.get_cache_stats()
         print(f"📂 Кэш: {cache_stats['processed_files']} файлов, {cache_stats['tested_keys']} ключей")
@@ -443,7 +528,7 @@ class EnhancedGitHubOpenAIScanner:
                         
                         if self.validate_openai_key(key):
                             print(f"✅ ВАЛИДНЫЙ КЛЮЧ НАЙДЕН!")
-                            self.valid_keys.append({
+                            key_data = {
                                 'key': key,
                                 'repository': repo_info.get('full_name', 'unknown'),
                                 'file_path': file_info.get('path', 'unknown'),
@@ -451,7 +536,11 @@ class EnhancedGitHubOpenAIScanner:
                                 'updated_at': updated_at,
                                 'size': file_info.get('size', 0),
                                 'found_at': datetime.now().isoformat()
-                            })
+                            }
+                            self.valid_keys.append(key_data)
+                            
+                            # Сохраняем валидный ключ сразу в файл
+                            self.add_valid_key_to_file(key_data)
                         else:
                             print(f"❌ Ключ невалидный")
                         
@@ -462,6 +551,13 @@ class EnhancedGitHubOpenAIScanner:
                     if files_processed_in_session % 10 == 0:
                         print(f"💾 Сохранение промежуточного прогресса...")
                         self.save_cache()
+                        
+                        # Проверяем лимиты каждые 10 файлов
+                        if files_processed_in_session % 20 == 0:
+                            print(f"🔍 Проверка лимитов API...")
+                            if not self.should_continue_scanning():
+                                print(f"🛑 Остановка сканирования из-за исчерпания лимитов")
+                                return self.valid_keys
                         
         except KeyboardInterrupt:
             print(f"\n⏹️ Сканирование прервано пользователем")
@@ -475,32 +571,264 @@ class EnhancedGitHubOpenAIScanner:
         
         return self.valid_keys
 
-    def save_results(self, filename: str = 'enhanced_valid_openai_keys.json'):
+    def save_results(self, filename: str = None):
+        if filename is None:
+            filename = os.getenv('OUTPUT_FILE', 'enhanced_valid_openai_keys.json')
         """
-        Сохранение результатов с дополнительной информацией
+        Обновление статистики в файле результатов (НЕ перезаписывает ключи)
         """
-        results = {
-            'scan_info': {
+        try:
+            # Читаем существующие данные
+            if os.path.exists(filename):
+                with open(filename, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            else:
+                data = {'valid_keys': []}
+            
+            # Обновляем только статистику
+            data['scan_info'] = {
                 'timestamp': datetime.now().isoformat(),
                 'total_keys_tested': len(self.tested_keys),
-                'valid_keys_found': len(self.valid_keys),
+                'valid_keys_found': len(data.get('valid_keys', [])),
                 'files_processed': len(self.processed_files),
-                'success_rate': f"{len(self.valid_keys)/len(self.tested_keys)*100:.2f}%" if self.tested_keys else "0%"
-            },
-            'valid_keys': self.valid_keys
-        }
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
-        
-        print(f"\n📊 СТАТИСТИКА СКАНИРОВАНИЯ")
-        print(f"{'='*50}")
-        print(f"🔍 Всего протестировано ключей: {len(self.tested_keys)}")
-        print(f"✅ Валидных ключей найдено: {len(self.valid_keys)}")
-        print(f"📁 Обработано файлов: {len(self.processed_files)}")
-        print(f"📈 Процент успеха: {results['scan_info']['success_rate']}")
-        print(f"💾 Результаты сохранены в: {filename}")
+                'success_rate': f"{len(data.get('valid_keys', []))/len(self.tested_keys)*100:.2f}%" if self.tested_keys else "0%"
+            }
+            
+            # Сохраняем обновленные данные
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            
+            print(f"\n📊 СТАТИСТИКА СКАНИРОВАНИЯ")
+            print(f"{'='*50}")
+            print(f"🔍 Всего протестировано ключей: {len(self.tested_keys)}")
+            print(f"✅ Валидных ключей найдено: {len(data.get('valid_keys', []))}")
+            print(f"📁 Обработано файлов: {len(self.processed_files)}")
+            print(f"📈 Процент успеха: {data['scan_info']['success_rate']}")
+            print(f"💾 Статистика обновлена в: {filename}")
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка обновления статистики: {e}")
+    
+    def add_valid_key_to_file(self, key_data: Dict):
+        """
+        Добавляет валидный ключ сразу в файл (накопительная логика)
+        """
+        try:
+            output_file = os.getenv('OUTPUT_FILE', 'enhanced_valid_openai_keys.json')
+            
+            # Читаем существующие данные
+            if os.path.exists(output_file):
+                with open(output_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            else:
+                data = {
+                    'scan_info': {
+                        'timestamp': datetime.now().isoformat(),
+                        'total_keys_tested': 0,
+                        'valid_keys_found': 0,
+                        'files_processed': 0,
+                        'success_rate': "0%"
+                    },
+                    'valid_keys': []
+                }
+            
+            # Проверяем, нет ли уже такого ключа
+            existing_keys = [k['key'] for k in data.get('valid_keys', [])]
+            if key_data['key'] not in existing_keys:
+                # Добавляем новый ключ
+                data['valid_keys'].append(key_data)
+                
+                # Обновляем статистику
+                data['scan_info'].update({
+                    'timestamp': datetime.now().isoformat(),
+                    'total_keys_tested': len(self.tested_keys),
+                    'valid_keys_found': len(data['valid_keys']),
+                    'files_processed': len(self.processed_files),
+                    'success_rate': f"{len(data['valid_keys'])/len(self.tested_keys)*100:.2f}%" if self.tested_keys else "0%"
+                })
+                
+                # Сохраняем обновленные данные
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                
+                print(f"💾 Валидный ключ добавлен в {output_file}")
+                return True
+            else:
+                print(f"🔄 Ключ уже существует в файле")
+                return False
+                
+        except Exception as e:
+            print(f"⚠️ Ошибка добавления ключа в файл: {e}")
+            return False
 
+    def check_rate_limits(self) -> Dict:
+        """
+        Проверяет текущие лимиты GitHub API
+        
+        Returns:
+            Словарь с информацией о лимитах
+        """
+        try:
+            response = self.session.get("https://api.github.com/rate_limit")
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Извлекаем информацию о лимитах для поиска кода
+                search_limits = data.get('resources', {}).get('search', {})
+                core_limits = data.get('resources', {}).get('core', {})
+                
+                return {
+                    'search': {
+                        'limit': search_limits.get('limit', 0),
+                        'remaining': search_limits.get('remaining', 0),
+                        'reset_time': search_limits.get('reset', 0),
+                        'reset_datetime': datetime.fromtimestamp(search_limits.get('reset', 0)) if search_limits.get('reset') else None
+                    },
+                    'core': {
+                        'limit': core_limits.get('limit', 0),
+                        'remaining': core_limits.get('remaining', 0),
+                        'reset_time': core_limits.get('reset', 0),
+                        'reset_datetime': datetime.fromtimestamp(core_limits.get('reset', 0)) if core_limits.get('reset') else None
+                    },
+                    'status': 'success'
+                }
+            else:
+                return {
+                    'status': 'error',
+                    'error': f"HTTP {response.status_code}: {response.text}"
+                }
+                
+        except Exception as e:
+            return {
+                'status': 'error',
+                'error': str(e)
+            }
+
+    def print_rate_limits(self):
+        """
+        Выводит информацию о текущих лимитах GitHub API
+        """
+        print("🔍 Проверка лимитов GitHub API...")
+        limits = self.check_rate_limits()
+        
+        if limits['status'] == 'success':
+            search = limits['search']
+            core = limits['core']
+            
+            print(f"📊 ЛИМИТЫ GITHUB API")
+            print("-" * 50)
+            print(f"🔎 Search API:")
+            print(f"   Лимит: {search['limit']} запросов/час")
+            print(f"   Осталось: {search['remaining']} запросов")
+            if search['reset_datetime']:
+                print(f"   Сброс: {search['reset_datetime'].strftime('%H:%M:%S')}")
+            
+            print(f"🌐 Core API:")
+            print(f"   Лимит: {core['limit']} запросов/час")
+            print(f"   Осталось: {core['remaining']} запросов")
+            if core['reset_datetime']:
+                print(f"   Сброс: {core['reset_datetime'].strftime('%H:%M:%S')}")
+            
+            # Предупреждения о низких лимитах
+            if search['remaining'] < 10:
+                print(f"⚠️  ПРЕДУПРЕЖДЕНИЕ: Осталось мало запросов для Search API!")
+            
+            if core['remaining'] < 100:
+                print(f"⚠️  ПРЕДУПРЕЖДЕНИЕ: Осталось мало запросов для Core API!")
+                
+        else:
+            print(f"❌ Ошибка получения лимитов: {limits.get('error', 'Неизвестная ошибка')}")
+        
+        print("-" * 50)
+
+    def should_continue_scanning(self) -> bool:
+        """
+        Проверяет, можно ли продолжать сканирование на основе лимитов API
+        
+        Returns:
+            True если можно продолжать, False если лимиты исчерпаны
+        """
+        limits = self.check_rate_limits()
+        
+        if limits['status'] != 'success':
+            print(f"⚠️ Не удалось проверить лимиты: {limits.get('error')}")
+            return True  # Продолжаем, если не удалось проверить
+        
+        search_remaining = limits['search']['remaining']
+        core_remaining = limits['core']['remaining']
+        
+        # Минимальные требования для продолжения
+        min_search_requests = 5   # Для поиска файлов
+        min_core_requests = 20    # Для получения содержимого файлов
+        
+        if search_remaining < min_search_requests:
+            reset_time = limits['search']['reset_datetime']
+            if reset_time:
+                wait_minutes = (reset_time - datetime.now()).total_seconds() / 60
+                print(f"🛑 Исчерпаны запросы Search API ({search_remaining} осталось). Ожидание {wait_minutes:.1f} минут до сброса.")
+            else:
+                print(f"🛑 Исчерпаны запросы Search API ({search_remaining} осталось).")
+            return False
+        
+        if core_remaining < min_core_requests:
+            reset_time = limits['core']['reset_datetime']
+            if reset_time:
+                wait_minutes = (reset_time - datetime.now()).total_seconds() / 60
+                print(f"🛑 Исчерпаны запросы Core API ({core_remaining} осталось). Ожидание {wait_minutes:.1f} минут до сброса.")
+            else:
+                print(f"🛑 Исчерпаны запросы Core API ({core_remaining} осталось).")
+            return False
+        
+        # Предупреждения о низких лимитах
+        if search_remaining < min_search_requests * 2:
+            print(f"⚠️ Мало запросов Search API: {search_remaining}")
+        
+        if core_remaining < min_core_requests * 2:
+            print(f"⚠️ Мало запросов Core API: {core_remaining}")
+        
+        return True
+
+    def wait_for_rate_limit_reset(self, api_type: str = 'search'):
+        """
+        Ожидает сброса лимитов для указанного типа API
+        
+        Args:
+            api_type: 'search' или 'core'
+        """
+        limits = self.check_rate_limits()
+        
+        if limits['status'] != 'success':
+            print(f"⚠️ Не удалось получить информацию о лимитах, ожидание 60 секунд...")
+            time.sleep(60)
+            return
+        
+        api_limits = limits.get(api_type, {})
+        reset_datetime = api_limits.get('reset_datetime')
+        
+        if reset_datetime:
+            wait_time = (reset_datetime - datetime.now()).total_seconds()
+            if wait_time > 0:
+                wait_minutes = wait_time / 60
+                print(f"⏰ Ожидание сброса лимитов {api_type.upper()} API: {wait_minutes:.1f} минут...")
+                
+                # Ждем с периодическими обновлениями
+                while wait_time > 0:
+                    if wait_time > 300:  # Больше 5 минут
+                        print(f"   Осталось ждать: {wait_time/60:.1f} минут")
+                        time.sleep(60)  # Проверяем каждую минуту
+                        wait_time -= 60
+                    else:
+                        time.sleep(wait_time)
+                        break
+                
+                print(f"✅ Лимиты {api_type.upper()} API должны быть сброшены")
+            else:
+                print(f"✅ Лимиты {api_type.upper()} API уже сброшены")
+        else:
+            print(f"⚠️ Не удалось определить время сброса лимитов, ожидание 60 секунд...")
+            time.sleep(60)
+    
 
 def main():
     """

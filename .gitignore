@@ -1,3 +1,18 @@
+# Переменные окружения и конфиденциальные данные
+.env
+.env.local
+.env.production
+.env.staging
+
+# Результаты сканирования - содержат найденные API ключи
+*.json
+!requirements.txt
+scanner_cache.json
+valid_openai_keys.json
+enhanced_valid_openai_keys.json
+partial_enhanced_results.json
+error_enhanced_results.json
+
 # Python
 __pycache__/
 *.py[cod]
@@ -16,7 +31,6 @@ parts/
 sdist/
 var/
 wheels/
-pip-wheel-metadata/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
@@ -44,9 +58,32 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+cover/
 
-# Environment variables
-.env
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# celery beat schedule file
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
 .venv
 env/
 venv/
@@ -54,52 +91,64 @@ ENV/
 env.bak/
 venv.bak/
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Spyder project settings
+.spyderproject
+.spyproject
 
-# pyenv
-.python-version
+# Rope project settings
+.ropeproject
 
-# IDE
-.vscode/
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# PyCharm
 .idea/
-*.swp
-*.swo
-*~
 
-# Project specific
-scanner_cache.json
-enhanced_valid_openai_keys.json
-partial_enhanced_results.json
-*.log
+# VSCode
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
 
 # Windows
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
-*.cab
-*.msi
-*.msix
-*.msm
-*.msp
-*.lnk
 
 # macOS
 .DS_Store
 .AppleDouble
 .LSOverride
-Icon?
-._*
-.DocumentRevisions-V100
-.fseventsd
-.Spotlight-V100
-.TemporaryItems
-.Trashes
-.VolumeIcon.icns
-.com.apple.timemachine.donotpresent
-.AppleDB
-.AppleDesktop
-Network Trash Folder
-Temporary Items
-.apdisk
+
+# Linux
+*~
+
+# Временные файлы
+*.tmp
+*.temp
+*.log
+*.bak
+*.swp
+*.swo
+
+# Архивы
+*.zip
+*.rar
+*.7z
+*.tar.gz
