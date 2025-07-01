@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Улучшенный скрипт для поиска и валидации API ключей OpenAI в GitHub репозиториях
-Версия 2.0 с расширенными паттернами поиска и сортировкой по свежести
+Улучшенный скрипт для поиска и валидации API ключей различных AI-провайдеров в GitHub репозиториях
+Версия 3.0 с мульти-провайдерным поиском и валидацией (OpenAI, Anthropic, Google Gemini)
 """
 
 import requests
@@ -9,22 +9,23 @@ import re
 import time
 import json
 import os
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Optional, Tuple
 from urllib.parse import quote
 import base64
 import openai
 from openai import OpenAI
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
+from ai_providers_key_patterns import AI_PROVIDERS_PATTERNS, AIProvider, get_all_patterns
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
 
 
-class EnhancedGitHubOpenAIScanner:
+class EnhancedMultiProviderGitHubScanner:
     def __init__(self, github_token: str = None):
         """
-        Инициализация улучшенного сканера
+        Инициализация мульти-провайдерного сканера
         
         Args:
             github_token: Токен GitHub API для увеличения лимитов запросов
@@ -37,28 +38,30 @@ class EnhancedGitHubOpenAIScanner:
                 'Accept': 'application/vnd.github.v3+json'
             })
         
-        self.valid_keys = []
+        # Структура для хранения валидных ключей по провайдерам
+        self.valid_keys = {
+            'openai': [],
+            'anthropic': [],
+            'google_gemini': []
+        }
         self.tested_keys = set()
         self.processed_files = set()
         
-        # Файлы для кэширования
+        # Файлы для кэширования и сохранения результатов
         self.cache_file = 'scanner_cache.json'
         self.processed_repos_file = 'processed_repositories.json'
+        self.valid_keys_files = {
+            'openai': 'valid_openai_keys.json',
+            'anthropic': 'valid_anthropic_keys.json',
+            'google_gemini': 'valid_google_gemini_keys.json'
+        }
         
-        # Загружаем кэш при инициализации
+        # Загружаем кэш и валидные ключи при инициализации
         self.ensure_files_exist()
         self.load_cache()
-        self.load_valid_keys()
+        self.load_all_valid_keys()
         
-        # Множественные паттерны для поиска различных форматов OpenAI API ключей
-        self.api_key_patterns = [
-            re.compile(r'sk-[A-Za-z0-9]{48}'),  # Старый формат: 48 символов
-            re.compile(r'sk-proj-[A-Za-z0-9\-_]{95,200}'),  # Новый project формат
-            re.compile(r'sk-[A-Za-z0-9\-_]{40,200}'),  # Общий паттерн для любых sk- ключей
-            re.compile(r'sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}'),  # Специфичный паттерн OpenAI
-        ]
-        
-        print(f"Инициализирован сканер {'с токеном GitHub' if github_token else 'без токена GitHub'}")
+        print(f"Инициализирован мульти-провайдерный сканер {'с токеном GitHub' if github_token else 'без токена GitHub'}")
 
     def load_cache(self):
         """
@@ -81,49 +84,30 @@ class EnhancedGitHubOpenAIScanner:
             self.processed_files = set()
             self.tested_keys = set()
 
-    def load_valid_keys(self):
-        """
-        Загружает существующие валидные ключи из файла результатов
-        """
-        try:
-            output_file = os.getenv('OUTPUT_FILE', 'enhanced_valid_openai_keys.json')
-            if os.path.exists(output_file):
-                with open(output_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    existing_keys = data.get('valid_keys', [])
-                    self.valid_keys.extend(existing_keys)
-                    
-                print(f"📄 Загружено {len(existing_keys)} существующих валидных ключей")
-            else:
-                print("📄 Файл результатов не найден, создастся при первом сохранении")
-                
-        except Exception as e:
-            print(f"⚠️ Ошибка загрузки валидных ключей: {e}")
-
     def ensure_files_exist(self):
         """
-        Проверяет существование необходимых файлов и создает их при необходимости
+        Проверяет существование необходимых файлов для всех провайдеров и создает их при необходимости
         """
-        output_file = os.getenv('OUTPUT_FILE', 'enhanced_valid_openai_keys.json')
-        
-        # Создаем файл результатов если не существует
-        if not os.path.exists(output_file):
-            initial_data = {
-                'scan_info': {
-                    'timestamp': datetime.now().isoformat(),
-                    'total_keys_tested': 0,
-                    'valid_keys_found': 0,
-                    'files_processed': 0,
-                    'success_rate': "0%"
-                },
-                'valid_keys': []
-            }
-            try:
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    json.dump(initial_data, f, indent=2, ensure_ascii=False)
-                print(f"✅ Создан файл результатов: {output_file}")
-            except Exception as e:
-                print(f"⚠️ Ошибка создания файла результатов: {e}")
+        # Создаем файлы для каждого провайдера
+        for provider, filename in self.valid_keys_files.items():
+            if not os.path.exists(filename):
+                initial_data = {
+                    'scan_info': {
+                        'timestamp': datetime.now().isoformat(),
+                        'total_keys_tested': 0,
+                        'valid_keys_found': 0,
+                        'files_processed': 0,
+                        'success_rate': "0%",
+                        'provider': provider
+                    },
+                    'valid_keys': []
+                }
+                try:
+                    with open(filename, 'w', encoding='utf-8') as f:
+                        json.dump(initial_data, f, indent=2, ensure_ascii=False)
+                    print(f"✅ Создан файл для {provider.upper()}: {filename}")
+                except Exception as e:
+                    print(f"⚠️ Ошибка создания файла {provider}: {e}")
         
         # Создаем файл кэша если не существует
         if not os.path.exists(self.cache_file):
@@ -222,42 +206,79 @@ class EnhancedGitHubOpenAIScanner:
             Список поисковых запросов
         """
         base_queries = [
-            # Основные запросы
+            # === OpenAI ===
             'OPENAI_API_KEY',
             'sk- AND openai',
             'openai.api_key',
             '"sk-" AND (openai OR gpt)',
-            
-            # Новые форматы ключей
             'sk-proj AND openai',
             '"sk-proj-" AND api',
-            
-            # Поиск в конфигурационных файлах
             'OPENAI_API_KEY AND .env',
             'OPENAI_API_KEY AND config',
             'openai_api_key AND settings',
-            
-            # Поиск в коде
             'openai.api_key AND python',
             'OpenAI AND javascript',
-            'api_key AND typescript',
-            
-            # Поиск в документации
             'OPENAI_API_KEY AND README',
             'openai AND setup',
-            
-            # Поиск в контейнерах
             'OPENAI_API_KEY AND dockerfile',
             'openai AND docker-compose',
+            
+            # === Anthropic (Claude) ===
+            'ANTHROPIC_API_KEY',
+            'CLAUDE_API_KEY',
+            'sk-ant AND anthropic',
+            '"sk-ant-" AND claude',
+            'anthropic AND api_key',
+            'claude AND api_key',
+            'ANTHROPIC_API_KEY AND .env',
+            'CLAUDE_API_KEY AND config',
+            'anthropic_api_key AND settings',
+            'anthropic AND python',
+            'claude AND javascript',
+            'ANTHROPIC_API_KEY AND README',
+            'anthropic AND setup',
+            'ANTHROPIC_API_KEY AND dockerfile',
+            'claude AND docker-compose',
+            
+            # === Google Gemini ===
+            'GOOGLE_API_KEY',
+            'GEMINI_API_KEY',
+            'AIza AND google',
+            '"AIza" AND gemini',
+            'google AND api_key',
+            'gemini AND api_key',
+            'GOOGLE_API_KEY AND .env',
+            'GEMINI_API_KEY AND config',
+            'google_api_key AND settings',
+            'gemini AND python',
+            'google.generativeai AND javascript',
+            'GOOGLE_API_KEY AND README',
+            'gemini AND setup',
+            'GOOGLE_API_KEY AND dockerfile',
+            'gemini AND docker-compose',
+            
+            # === Универсальные запросы ===
+            'api_key AND (openai OR anthropic OR google OR gemini OR claude)',
+            '"API_KEY" AND (AI OR GPT OR LLM)',
+            'env AND (OPENAI OR ANTHROPIC OR GOOGLE OR GEMINI)',
         ]
         
         if include_recent:
             # Добавляем фильтры для поиска свежих файлов
             recent_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
             recent_queries = [
+                # OpenAI
                 f'sk- pushed:>{recent_date}',
                 f'OPENAI_API_KEY created:>{recent_date}',
                 f'openai api_key updated:>{recent_date}',
+                # Anthropic
+                f'sk-ant pushed:>{recent_date}',
+                f'ANTHROPIC_API_KEY created:>{recent_date}',
+                f'anthropic api_key updated:>{recent_date}',
+                # Google
+                f'AIza pushed:>{recent_date}',
+                f'GOOGLE_API_KEY created:>{recent_date}',
+                f'gemini api_key updated:>{recent_date}',
             ]
             base_queries.extend(recent_queries)
         
@@ -377,47 +398,68 @@ class EnhancedGitHubOpenAIScanner:
 
     def extract_api_keys(self, content: str) -> Set[str]:
         """
-        Расширенное извлечение API ключей из содержимого файла
+        Расширенное извлечение API ключей всех поддерживаемых провайдеров из содержимого файла
         """
         keys = set()
         
-        # Применяем все базовые паттерны
-        for pattern in self.api_key_patterns:
-            matches = pattern.findall(content)
-            keys.update(matches)
+        # Используем паттерны из модуля ai_providers_key_patterns
+        all_patterns = get_all_patterns()
         
-        # Расширенные контекстные паттерны
+        # Основной поиск по базовым паттернам всех провайдеров
+        for pattern in all_patterns:
+            matches = pattern.findall(content)
+            for match in matches:
+                key = match.strip() if isinstance(match, str) else str(match).strip()
+                if len(key) >= 20:  # Минимальная длина ключа
+                    keys.add(key)
+        
+        # Расширенные контекстные паттерны для всех провайдеров
         context_patterns = [
-            # В кавычках различных типов
+            # OpenAI ключи в кавычках различных типов
             r'["\']sk-[A-Za-z0-9\-_]{20,200}["\']',
             r'[`]sk-[A-Za-z0-9\-_]{20,200}[`]',
             
-            # Переменные окружения
+            # Anthropic ключи
+            r'["\']sk-ant-[A-Za-z0-9\-_]{20,200}["\']',
+            r'[`]sk-ant-[A-Za-z0-9\-_]{20,200}[`]',
+            
+            # Google Gemini ключи
+            r'["\']AIza[A-Za-z0-9\-_]{35}["\']',
+            r'[`]AIza[A-Za-z0-9\-_]{35}[`]',
+            
+            # Переменные окружения - OpenAI
             r'(?i)(?:OPENAI_API_KEY|OPENAI_KEY|API_KEY)[^a-zA-Z0-9]*[=:][^a-zA-Z0-9]*["\']?(sk-[A-Za-z0-9\-_]{20,200})["\']?',
             
-            # Настройки в коде
-            r'(?i)(?:openai|client)[_\.](?:api[_\.])?key[^a-zA-Z0-9]*[=:][^a-zA-Z0-9]*["\']?(sk-[A-Za-z0-9\-_]{20,200})["\']?',
-            r'(?i)(?:api_key|apikey|token)[^a-zA-Z0-9]*[=:][^a-zA-Z0-9]*["\']?(sk-[A-Za-z0-9\-_]{20,200})["\']?',
+            # Переменные окружения - Anthropic
+            r'(?i)(?:ANTHROPIC_API_KEY|CLAUDE_API_KEY|ANTHROPIC_KEY)[^a-zA-Z0-9]*[=:][^a-zA-Z0-9]*["\']?(sk-ant-[A-Za-z0-9\-_]{20,200})["\']?',
+            
+            # Переменные окружения - Google
+            r'(?i)(?:GOOGLE_API_KEY|GEMINI_API_KEY|GOOGLE_AI_KEY)[^a-zA-Z0-9]*[=:][^a-zA-Z0-9]*["\']?(AIza[A-Za-z0-9\-_]{35})["\']?',
+            
+            # Настройки в коде - общие
+            r'(?i)(?:openai|anthropic|claude|google|gemini)[_\.](?:api[_\.])?key[^a-zA-Z0-9]*[=:][^a-zA-Z0-9]*["\']?((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})["\']?',
+            r'(?i)(?:api_key|apikey|token)[^a-zA-Z0-9]*[=:][^a-zA-Z0-9]*["\']?((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})["\']?',
             
             # JSON/YAML форматы
-            r'["\'](?:api_key|openai_api_key|key|token)["\'][^a-zA-Z0-9]*:[^a-zA-Z0-9]*["\']?(sk-[A-Za-z0-9\-_]{20,200})["\']?',
+            r'["\'](?:api_key|openai_api_key|anthropic_api_key|google_api_key|key|token)["\'][^a-zA-Z0-9]*:[^a-zA-Z0-9]*["\']?((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})["\']?',
             
             # Python специфичные
-            r'(?i)api_key\s*=\s*[rf]?["\']?(sk-[A-Za-z0-9\-_]{20,200})["\']?',
-            r'(?i)OpenAI\s*\([^)]*api_key\s*=\s*[rf]?["\']?(sk-[A-Za-z0-9\-_]{20,200})["\']?',
+            r'(?i)api_key\s*=\s*[rf]?["\']?((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})["\']?',
+            r'(?i)(?:OpenAI|Anthropic|Claude)\s*\([^)]*api_key\s*=\s*[rf]?["\']?((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})["\']?',
             
             # JavaScript/TypeScript
-            r'(?i)(?:api_?key|apikey)\s*:\s*["\']?(sk-[A-Za-z0-9\-_]{20,200})["\']?',
+            r'(?i)(?:api_?key|apikey)\s*:\s*["\']?((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})["\']?',
             
             # HTTP заголовки
-            r'(?i)Authorization[^a-zA-Z0-9]*:[^a-zA-Z0-9]*Bearer\s+(sk-[A-Za-z0-9\-_]{20,200})',
-            r'(?i)X-API-Key[^a-zA-Z0-9]*:[^a-zA-Z0-9]*["\']?(sk-[A-Za-z0-9\-_]{20,200})["\']?',
+            r'(?i)Authorization[^a-zA-Z0-9]*:[^a-zA-Z0-9]*Bearer\s+((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})',
+            r'(?i)X-API-Key[^a-zA-Z0-9]*:[^a-zA-Z0-9]*["\']?((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})["\']?',
+            r'(?i)x-api-key[^a-zA-Z0-9]*:[^a-zA-Z0-9]*["\']?((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})["\']?',
             
             # Командная строка
-            r'(?i)--(?:api-)?key\s+["\']?(sk-[A-Za-z0-9\-_]{20,200})["\']?',
+            r'(?i)--(?:api-)?key\s+["\']?((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})["\']?',
             
             # URL параметры
-            r'(?i)(?:api_key|key)=(sk-[A-Za-z0-9\-_]{20,200})',
+            r'(?i)(?:api_key|key)=((?:sk-|AIza)[A-Za-z0-9\-_]{20,200})',
         ]
         
         for pattern in context_patterns:
@@ -430,15 +472,20 @@ class EnhancedGitHubOpenAIScanner:
                     
                 key = key.strip('\'"` \t\n\r;,')
                 
-                if key.startswith('sk-') and len(key) >= 20:
+                if len(key) >= 20 and (key.startswith(('sk-', 'AIza'))):
                     keys.add(key)
         
-        # Финальный поиск "голых" ключей
-        loose_pattern = r'\bsk-[A-Za-z0-9\-_]{20,200}\b'
-        loose_matches = re.findall(loose_pattern, content)
-        for key in loose_matches:
-            if len(key) >= 20:
-                keys.add(key)
+        # Финальный поиск "голых" ключей всех типов
+        loose_patterns = [
+            r'\bsk-[A-Za-z0-9\-_]{20,200}\b',  # OpenAI и Anthropic
+            r'\bAIza[A-Za-z0-9\-_]{35}\b',     # Google Gemini
+        ]
+        
+        for loose_pattern in loose_patterns:
+            loose_matches = re.findall(loose_pattern, content)
+            for key in loose_matches:
+                if len(key) >= 20:
+                    keys.add(key)
         
         return keys
 
@@ -464,6 +511,109 @@ class EnhancedGitHubOpenAIScanner:
                 print(f"    Неизвестная ошибка: {error_str}")
                 
         return False
+
+    def validate_anthropic_key(self, api_key: str) -> bool:
+        """
+        Валидация API ключа Anthropic (Claude)
+        """
+        try:
+            url = "https://api.anthropic.com/v1/messages"
+            headers = {
+                'x-api-key': api_key,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json'
+            }
+            
+            # Минимальный тестовый запрос
+            data = {
+                'model': 'claude-3-haiku-20240307',
+                'max_tokens': 1,
+                'messages': [
+                    {'role': 'user', 'content': 'Hi'}
+                ]
+            }
+            
+            response = requests.post(url, headers=headers, json=data, timeout=10)
+            
+            if response.status_code == 200:
+                return True
+            elif response.status_code == 401:
+                return False
+            elif response.status_code in [429, 503]:  # Rate limit или недостаток кредитов
+                print(f"    Ключ валидный, но есть ограничения: {response.status_code}")
+                return True
+            else:
+                print(f"    Неожиданный статус Anthropic API: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(err in error_str for err in ['invalid api key', 'unauthorized']):
+                return False
+            elif any(err in error_str for err in ['quota', 'rate limit', 'billing']):
+                print(f"    Ключ валидный, но есть ограничения: {error_str}")
+                return True
+            else:
+                print(f"    Ошибка валидации Anthropic: {error_str}")
+                return False
+
+    def validate_google_gemini_key(self, api_key: str) -> bool:
+        """
+        Валидация API ключа Google Gemini
+        """
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1/models?key={api_key}"
+            
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                # Проверяем что есть модели в ответе
+                return 'models' in data and len(data.get('models', [])) > 0
+            elif response.status_code == 403:
+                # Возможно ключ валиден, но нет доступа к конкретному API
+                print(f"    Google API возвратил 403 - возможно валидный ключ без прав доступа")
+                return True
+            elif response.status_code == 401:
+                return False
+            elif response.status_code in [429, 503]:  # Rate limit
+                print(f"    Ключ валидный, но есть ограничения: {response.status_code}")
+                return True
+            else:
+                print(f"    Неожиданный статус Google API: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(err in error_str for err in ['invalid api key', 'unauthorized']):
+                return False
+            elif any(err in error_str for err in ['quota', 'rate limit', 'billing']):
+                print(f"    Ключ валидный, но есть ограничения: {error_str}")
+                return True
+            else:
+                print(f"    Ошибка валидации Google: {error_str}")
+                return False
+
+    def validate_api_key(self, api_key: str, provider: str) -> bool:
+        """
+        Универсальный метод валидации API ключа в зависимости от провайдера
+        
+        Args:
+            api_key: API-ключ для валидации
+            provider: Провайдер ключа
+            
+        Returns:
+            bool: True если ключ валидный
+        """
+        if provider == 'openai':
+            return self.validate_openai_key(api_key)
+        elif provider == 'anthropic':
+            return self.validate_anthropic_key(api_key)
+        elif provider == 'google_gemini':
+            return self.validate_google_gemini_key(api_key)
+        else:
+            print(f"⚠️ Неизвестный провайдер для валидации: {provider}")
+            return False
 
     def scan_repositories(self, max_pages_per_query: int = 3, sort_by: str = "updated") -> List[Dict]:
         """
@@ -524,25 +674,37 @@ class EnhancedGitHubOpenAIScanner:
                             
                         self.tested_keys.add(key)
                         key_preview = f"{key[:15]}...{key[-10:]}" if len(key) > 25 else key[:20] + "..."
-                        print(f"🔑 Тестируем ключ: {key_preview} (длина: {len(key)})")
                         
-                        if self.validate_openai_key(key):
-                            print(f"✅ ВАЛИДНЫЙ КЛЮЧ НАЙДЕН!")
+                        # Идентифицируем провайдера
+                        provider = self.identify_provider(key)
+                        if not provider:
+                            print(f"⚠️ Неопознанный формат ключа: {key_preview}")
+                            continue
+                        
+                        print(f"🔑 Тестируем {provider.upper()} ключ: {key_preview} (длина: {len(key)})")
+                        
+                        if self.validate_api_key(key, provider):
+                            print(f"✅ ВАЛИДНЫЙ {provider.upper()} КЛЮЧ НАЙДЕН!")
                             key_data = {
-                                'key': key,
+                                'api_key': key,
+                                'provider': provider,
                                 'repository': repo_info.get('full_name', 'unknown'),
                                 'file_path': file_info.get('path', 'unknown'),
                                 'file_url': file_info.get('html_url', ''),
                                 'updated_at': updated_at,
                                 'size': file_info.get('size', 0),
-                                'found_at': datetime.now().isoformat()
+                                'found_at': datetime.now().isoformat(),
+                                'validation_status': 'valid'
                             }
-                            self.valid_keys.append(key_data)
                             
-                            # Сохраняем валидный ключ сразу в файл
-                            self.add_valid_key_to_file(key_data)
+                            # Добавляем в локальный кэш
+                            self.valid_keys[provider].append(key_data)
+                            
+                            # Сохраняем валидный ключ сразу в соответствующий файл
+                            key_info_for_file = {k: v for k, v in key_data.items() if k != 'api_key'}
+                            self.add_valid_key_to_file(key, provider, key_info_for_file)
                         else:
-                            print(f"❌ Ключ невалидный")
+                            print(f"❌ {provider.upper()} ключ невалидный")
                         
                         # Увеличенная пауза для избежания блокировки
                         time.sleep(4)
@@ -609,16 +771,24 @@ class EnhancedGitHubOpenAIScanner:
         except Exception as e:
             print(f"⚠️ Ошибка обновления статистики: {e}")
     
-    def add_valid_key_to_file(self, key_data: Dict):
+    def add_valid_key_to_file(self, api_key: str, provider: str, key_info: dict):
         """
-        Добавляет валидный ключ сразу в файл (накопительная логика)
+        Добавляет валидный ключ в соответствующий файл провайдера
+        
+        Args:
+            api_key: Валидный API-ключ
+            provider: Провайдер ключа
+            key_info: Дополнительная информация о ключе
         """
-        try:
-            output_file = os.getenv('OUTPUT_FILE', 'enhanced_valid_openai_keys.json')
+        filename = self.valid_keys_files.get(provider)
+        if not filename:
+            print(f"⚠️ Неизвестный провайдер: {provider}")
+            return
             
-            # Читаем существующие данные
-            if os.path.exists(output_file):
-                with open(output_file, 'r', encoding='utf-8') as f:
+        try:
+            # Загружаем существующие данные
+            if os.path.exists(filename):
+                with open(filename, 'r', encoding='utf-8') as f:
                     data = json.load(f)
             else:
                 data = {
@@ -627,39 +797,101 @@ class EnhancedGitHubOpenAIScanner:
                         'total_keys_tested': 0,
                         'valid_keys_found': 0,
                         'files_processed': 0,
-                        'success_rate': "0%"
+                        'success_rate': "0%",
+                        'provider': provider
                     },
                     'valid_keys': []
                 }
             
-            # Проверяем, нет ли уже такого ключа
-            existing_keys = [k['key'] for k in data.get('valid_keys', [])]
-            if key_data['key'] not in existing_keys:
+            # Проверяем, что ключ еще не добавлен
+            existing_keys = [key['api_key'] for key in data['valid_keys']]
+            if api_key not in existing_keys:
                 # Добавляем новый ключ
-                data['valid_keys'].append(key_data)
+                new_key_entry = {
+                    'api_key': api_key,
+                    'provider': provider,
+                    'found_timestamp': datetime.now().isoformat(),
+                    'validation_status': 'valid',
+                    **key_info
+                }
+                data['valid_keys'].append(new_key_entry)
                 
                 # Обновляем статистику
-                data['scan_info'].update({
-                    'timestamp': datetime.now().isoformat(),
-                    'total_keys_tested': len(self.tested_keys),
-                    'valid_keys_found': len(data['valid_keys']),
-                    'files_processed': len(self.processed_files),
-                    'success_rate': f"{len(data['valid_keys'])/len(self.tested_keys)*100:.2f}%" if self.tested_keys else "0%"
-                })
+                data['scan_info']['valid_keys_found'] = len(data['valid_keys'])
+                data['scan_info']['last_updated'] = datetime.now().isoformat()
                 
-                # Сохраняем обновленные данные
-                with open(output_file, 'w', encoding='utf-8') as f:
+                # Сохраняем файл
+                with open(filename, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
                 
-                print(f"💾 Валидный ключ добавлен в {output_file}")
-                return True
+                # Обновляем локальный кэш
+                self.valid_keys[provider].append(new_key_entry)
+                
+                print(f"✅ {provider.upper()}: Добавлен валидный ключ в {filename}")
             else:
-                print(f"🔄 Ключ уже существует в файле")
-                return False
+                print(f"ℹ️ {provider.upper()}: Ключ уже существует в файле")
                 
         except Exception as e:
-            print(f"⚠️ Ошибка добавления ключа в файл: {e}")
-            return False
+            print(f"⚠️ Ошибка сохранения валидного ключа {provider}: {e}")
+
+    def identify_provider(self, api_key: str) -> Optional[str]:
+        """
+        Идентифицирует провайдера по формату API-ключа
+        
+        Args:
+            api_key: API-ключ для идентификации
+            
+        Returns:
+            str: Название провайдера или None если не удалось идентифицировать
+        """
+        # Проверяем в порядке от более специфичных к менее специфичным
+        # 1. Сначала Google Gemini (самый специфичный - начинается с AIza)
+        if api_key.startswith('AIza'):
+            return 'google_gemini'
+        
+        # 2. Затем Anthropic (начинается с sk-ant-)
+        if api_key.startswith('sk-ant-'):
+            return 'anthropic'
+        
+        # 3. Последним OpenAI (все остальные sk-)
+        if api_key.startswith('sk-'):
+            return 'openai'
+        
+        return None
+
+    def load_all_valid_keys(self):
+        """
+        Загружает все существующие валидные ключи из файлов для каждого провайдера
+        """
+        for provider, filename in self.valid_keys_files.items():
+            try:
+                if os.path.exists(filename):
+                    with open(filename, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        existing_keys = data.get('valid_keys', [])
+                        self.valid_keys[provider] = existing_keys
+                        
+                    print(f"📄 {provider.upper()}: Загружено {len(existing_keys)} существующих валидных ключей")
+                else:
+                    # Создаем файл если не существует
+                    initial_data = {
+                        'scan_info': {
+                            'timestamp': datetime.now().isoformat(),
+                            'total_keys_tested': 0,
+                            'valid_keys_found': 0,
+                            'files_processed': 0,
+                            'success_rate': "0%",
+                            'provider': provider
+                        },
+                        'valid_keys': []
+                    }
+                    with open(filename, 'w', encoding='utf-8') as f:
+                        json.dump(initial_data, f, indent=2, ensure_ascii=False)
+                    print(f"✅ Создан файл для {provider.upper()}: {filename}")
+                    
+            except Exception as e:
+                print(f"⚠️ Ошибка загрузки валидных ключей {provider}: {e}")
+                self.valid_keys[provider] = []
 
     def check_rate_limits(self) -> Dict:
         """
@@ -832,13 +1064,15 @@ class EnhancedGitHubOpenAIScanner:
 
 def main():
     """
-    Основная функция запуска улучшенного сканера
+    Основная функция запуска мульти-провайдерного сканера
     """
-    print("🚀 ENHANCED GITHUB OPENAI SCANNER v2.1 (с кэшированием)")
-    print("="*60)
+    print("🚀 ENHANCED MULTI-PROVIDER GITHUB SCANNER v3.0")
+    print("🤖 Поддержка: OpenAI, Anthropic (Claude), Google Gemini")
+    print("👨‍💻 Автор: PRIZRAKJJ | Telegram: t.me/SafeVibeCode")
+    print("="*70)
     
     github_token = os.getenv('GITHUB_TOKEN')
-    scanner = EnhancedGitHubOpenAIScanner(github_token)
+    scanner = EnhancedMultiProviderGitHubScanner(github_token)
     
     # Проверяем аргументы командной строки для очистки кэша
     import sys
@@ -860,60 +1094,112 @@ def main():
         print("\n💡 Для очистки кэша запустите: python enhanced_scanner.py --clear-cache")
         print("="*60)
     
-    # Проверяем наличие OPENAI_API_KEY в .env для тестирования функции валидации
-    test_openai_key = os.getenv('OPENAI_API_KEY')
-    if test_openai_key:
-        print("\n🔧 ТЕСТИРОВАНИЕ ФУНКЦИИ ВАЛИДАЦИИ")
-        print("-" * 50)
-        validation_works = scanner.test_validation_function(test_openai_key)
+    # Тестирование функций валидации для всех провайдеров
+    print("\n🔧 ТЕСТИРОВАНИЕ ФУНКЦИЙ ВАЛИДАЦИИ")
+    print("-" * 60)
+    
+    # Проверяем наличие тестовых ключей в .env
+    test_keys = {
+        'openai': os.getenv('OPENAI_API_KEY'),
+        'anthropic': os.getenv('ANTHROPIC_API_KEY'), 
+        'google_gemini': os.getenv('GOOGLE_API_KEY')
+    }
+    
+    available_keys = {k: v for k, v in test_keys.items() if v}
+    
+    if available_keys:
+        print("🧪 Найдены тестовые ключи в .env файле:")
+        validation_results = {}
         
-        if not validation_works:
-            print("\n⚠️  ПРЕДУПРЕЖДЕНИЕ: Функция валидации может работать некорректно!")
+        for provider, key in available_keys.items():
+            print(f"\n🤖 Тестирование {provider.upper()}:")
+            key_preview = f"{key[:15]}...{key[-10:]}" if len(key) > 25 else key[:20] + "..."
+            print(f"   Тестовый ключ: {key_preview} (длина: {len(key)})")
+            
+            try:
+                is_valid = scanner.validate_api_key(key, provider)
+                validation_results[provider] = is_valid
+                
+                if is_valid:
+                    print(f"   ✅ Функция валидации {provider.upper()} работает корректно!")
+                else:
+                    print(f"   ❌ Тестовый ключ {provider.upper()} невалидный или есть проблемы с API")
+                    
+            except Exception as e:
+                print(f"   ⚠️ Ошибка тестирования {provider.upper()}: {e}")
+                validation_results[provider] = False
+        
+        # Итоговый результат
+        working_validators = sum(1 for result in validation_results.values() if result)
+        total_validators = len(validation_results)
+        
+        print(f"\n📊 РЕЗУЛЬТАТ ТЕСТИРОВАНИЯ:")
+        print(f"   ✅ Работающих валидаторов: {working_validators}/{total_validators}")
+        
+        if working_validators == 0:
+            print("\n⚠️  ПРЕДУПРЕЖДЕНИЕ: Ни одна функция валидации не работает!")
             print("   Рекомендуется проверить:")
-            print("   - Валидность OPENAI_API_KEY в .env файле")
+            print("   - Валидность API ключей в .env файле")
             print("   - Подключение к интернету")
-            print("   - Квоты и лимиты OpenAI API")
+            print("   - Квоты и лимиты API провайдеров")
             
             response = input("\nПродолжить сканирование? (y/N): ").strip().lower()
             if response not in ['y', 'yes', 'д', 'да']:
                 print("Сканирование отменено пользователем.")
                 return
+        elif working_validators < total_validators:
+            print(f"\n⚠️  Частичная работоспособность: {working_validators}/{total_validators} валидаторов работают")
+            print("   Сканирование будет продолжено, но некоторые ключи могут быть пропущены")
         
-        print("\n" + "="*60)
+        print("\n" + "="*70)
     else:
-        print("\n⚠️  OPENAI_API_KEY не найден в .env файле")
-        print("   Функция валидации не будет протестирована заранее")
+        print("⚠️  Тестовые API ключи не найдены в .env файле")
+        print("   Функции валидации не будут протестированы заранее")
         print("   Валидация будет проверена на найденных ключах")
-        print("\n" + "="*60)
+        print("   Для полного тестирования добавьте ключи в .env:")
+        print("   - OPENAI_API_KEY=sk-...")
+        print("   - ANTHROPIC_API_KEY=sk-ant-...")
+        print("   - GOOGLE_API_KEY=AIza...")
+        print("\n" + "="*70)
     
     try:
-        print("\n🔍 ЗАПУСК ОСНОВНОГО СКАНИРОВАНИЯ")
+        print("\n🔍 ЗАПУСК МУЛЬТИ-ПРОВАЙДЕРНОГО СКАНИРОВАНИЯ")
         print("-" * 50)
         valid_keys = scanner.scan_repositories(max_pages_per_query=2, sort_by="updated")
-        scanner.save_results()
         
-        if valid_keys:
-            print(f"\n🎉 НАЙДЕННЫЕ ВАЛИДНЫЕ КЛЮЧИ:")
-            for i, key_info in enumerate(valid_keys, 1):
-                key_preview = f"{key_info['key'][:15]}...{key_info['key'][-10:]}"
-                print(f"{i}. 🔑 {key_preview}")
-                print(f"   📦 Репозиторий: {key_info['repository']}")
-                print(f"   📄 Файл: {key_info['file_path']}")
-                print(f"   🕒 Обновлен: {key_info['updated_at']}")
-                print()
-        else:
+        # Выводим статистику по каждому провайдеру
+        print(f"\n🎉 НАЙДЕННЫЕ ВАЛИДНЫЕ КЛЮЧИ ПО ПРОВАЙДЕРАМ:")
+        print("="*60)
+        
+        total_found = 0
+        for provider in ['openai', 'anthropic', 'google_gemini']:
+            provider_keys = valid_keys.get(provider, [])
+            total_found += len(provider_keys)
+            
+            print(f"\n🤖 {provider.upper().replace('_', ' ')}:")
+            if provider_keys:
+                for i, key_info in enumerate(provider_keys, 1):
+                    key_preview = f"{key_info['api_key'][:15]}...{key_info['api_key'][-10:]}"
+                    print(f"   {i}. 🔑 {key_preview}")
+                    print(f"      📦 Репозиторий: {key_info['repository']}")
+                    print(f"      📄 Файл: {key_info['file_path']}")
+                    print(f"      🕒 Обновлен: {key_info['updated_at']}")
+            else:
+                print(f"   ❌ Валидные ключи не найдены")
+        
+        print(f"\n📊 ИТОГО: {total_found} валидных ключей найдено")
+        
+        if total_found == 0:
             print("\n🤷 Валидные ключи не найдены в этом сканировании")
         
     except KeyboardInterrupt:
         print("\n⏹️ Сканирование прервано пользователем")
         print("💾 Сохранение кэша...")
         scanner.save_cache()
-        scanner.save_results('partial_enhanced_results.json')
     except Exception as e:
         print(f"\n❌ Ошибка во время сканирования: {e}")
         print("💾 Сохранение кэша...")
         scanner.save_cache()
-        scanner.save_results('error_enhanced_results.json')
 
 
 if __name__ == "__main__":
