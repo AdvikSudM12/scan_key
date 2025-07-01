@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Импортируем класс сканера
-from enhanced_scanner import EnhancedGitHubOpenAIScanner
+from enhanced_scanner import EnhancedMultiProviderGitHubScanner
 
 def test_rate_limits():
     """
@@ -24,7 +24,7 @@ def test_rate_limits():
     print(f"🔑 GitHub токен: {'✅ Найден' if github_token else '❌ Не найден'}")
     
     # Создаем экземпляр сканера
-    scanner = EnhancedGitHubOpenAIScanner(github_token)
+    scanner = EnhancedMultiProviderGitHubScanner(github_token)
     
     print(f"\n📊 ТЕСТ 1: Получение лимитов API")
     print("-" * 50)
