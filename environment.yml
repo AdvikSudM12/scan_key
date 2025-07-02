@@ -1,0 +1,7 @@
+name: scan_key_env
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - flake8
+  - pytest
