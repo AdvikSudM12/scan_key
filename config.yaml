@@ -1,0 +1,40 @@
+# Конфигурация Enhanced Multi-Provider GitHub Scanner v4.0
+
+scan:
+  max_pages_per_query: 3          # Максимальное количество страниц для обработки на запрос
+  delay_between_requests: 1.0     # Пауза между запросами к GitHub API (в секундах)
+  delay_between_key_tests: 2.0    # Пауза между проверками ключей через API (в секундах)
+  max_concurrent_files: 10        # Максимальное количество одновременно обрабатываемых файлов
+  timeout_seconds: 30             # Таймаут для сетевых запросов
+  include_recent: true            # Включать поиск в недавно обновленных репозиториях
+  recent_days: 30                 # Количество дней для "недавних" репозиториев
+
+cache:
+  cache_file: scanner_cache.json  # Файл для кэширования обработанных данных
+  auto_save_threshold: 10         # Автосохранение кэша каждые N файлов
+  use_sqlite: false               # Использовать SQLite вместо JSON для кэша
+  sqlite_file: scanner_cache.db   # Файл SQLite базы данных (если включен)
+
+logging:
+  level: INFO                     # Уровень логгирования (DEBUG, INFO, WARNING, ERROR)
+  file: scanner.log               # Файл для записи логов
+  max_size_mb: 10                 # Максимальный размер лог-файла в MB
+  backup_count: 5                 # Количество резервных копий лог-файлов
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+
+security:
+  mask_keys_in_logs: true         # Маскировать API ключи в логах
+  mask_keys_in_cache: true        # Маскировать API ключи в кэше
+  mask_keys_in_output: true       # Маскировать API ключи в выводе на экран
+  save_full_keys: false           # Сохранять полные ключи в файлы результатов (НЕ РЕКОМЕНДУЕТСЯ)
+
+github:
+  api_url: https://api.github.com # URL GitHub API
+  user_agent: Enhanced-Multi-Provider-Scanner/4.0  # User-Agent для запросов
+  rate_limit_buffer: 5            # Буфер для лимитов API (оставить N запросов в резерве)
+
+# Файлы для сохранения результатов по провайдерам
+output_files:
+  openai: valid_openai_keys.json
+  anthropic: valid_anthropic_keys.json
+  google_gemini: valid_google_gemini_keys.json
