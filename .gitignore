@@ -7,11 +7,18 @@
 # Результаты сканирования - содержат найденные API ключи
 *.json
 !requirements.txt
+!config.yaml
+!package.json
 scanner_cache.json
+scanner_cache.db
+scanner_analytics.json
 valid_openai_keys.json
+valid_anthropic_keys.json
+valid_google_gemini_keys.json
 enhanced_valid_openai_keys.json
 partial_enhanced_results.json
 error_enhanced_results.json
+test_cache_*.json
 
 # Python
 __pycache__/
