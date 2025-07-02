@@ -6,3 +6,6 @@ dependencies:
   - flake8
   - pytest
   - python-dotenv
+  - pip
+  - pip:
+  - openai
