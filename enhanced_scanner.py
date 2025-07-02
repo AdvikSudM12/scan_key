@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Улучшенный скрипт для поиска и валидации API ключей различных AI-провайдеров в GitHub репозиториях
-Версия 3.0 с мульти-провайдерным поиском и валидацией (OpenAI, Anthropic, Google Gemini)
+Версия 4.0 с архитектурным разделением и поддержкой асинхронности (backward compatibility wrapper)
 """
 
 import requests
@@ -18,6 +18,11 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from ai_providers_key_patterns import AI_PROVIDERS_PATTERNS, AIProvider, get_all_patterns
 
+# Импорты новой архитектуры
+from validators import ValidatorFactory
+from cache_manager import CacheManager
+from github_client import GitHubClient
+
 # Загружаем переменные окружения из .env файла
 load_dotenv()
 
@@ -25,11 +30,17 @@ load_dotenv()
 class EnhancedMultiProviderGitHubScanner:
     def __init__(self, github_token: str = None):
         """
-        Инициализация мульти-провайдерного сканера
+        Инициализация мульти-провайдерного сканера (backward compatibility wrapper)
         
         Args:
             github_token: Токен GitHub API для увеличения лимитов запросов
         """
+        # Используем новую архитектуру под капотом
+        self.github_client = GitHubClient(github_token)
+        self.cache_manager = CacheManager()
+        self.validator_factory = ValidatorFactory()
+        
+        # Backward compatibility атрибуты
         self.github_token = github_token
         self.session = requests.Session()
         if github_token:
@@ -44,12 +55,14 @@ class EnhancedMultiProviderGitHubScanner:
             'anthropic': [],
             'google_gemini': []
         }
+        
+        # Backward compatibility для кэша
         self.tested_keys = set()
         self.processed_files = set()
-        
-        # Файлы для кэширования и сохранения результатов
         self.cache_file = 'scanner_cache.json'
         self.processed_repos_file = 'processed_repositories.json'
+        
+        # Файлы для сохранения результатов
         self.valid_keys_files = {
             'openai': 'valid_openai_keys.json',
             'anthropic': 'valid_anthropic_keys.json',
@@ -65,24 +78,14 @@ class EnhancedMultiProviderGitHubScanner:
 
     def load_cache(self):
         """
-        Загружает кэш обработанных файлов и протестированных ключей
+        Загружает кэш обработанных файлов и протестированных ключей (backward compatibility)
         """
-        try:
-            # Загружаем обработанные файлы
-            if os.path.exists(self.cache_file):
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    cache_data = json.load(f)
-                    self.processed_files = set(cache_data.get('processed_files', []))
-                    self.tested_keys = set(cache_data.get('tested_keys', []))
-                    
-                print(f"📂 Загружен кэш: {len(self.processed_files)} файлов, {len(self.tested_keys)} ключей")
-            else:
-                print("📂 Кэш не найден, начинаем с чистого листа")
-                
-        except Exception as e:
-            print(f"⚠️ Ошибка загрузки кэша: {e}")
-            self.processed_files = set()
-            self.tested_keys = set()
+        # Синхронизируем с новым cache_manager
+        cache_stats = self.cache_manager.get_stats()
+        self.processed_files = self.cache_manager.processed_files.copy()
+        self.tested_keys = self.cache_manager.tested_keys.copy()
+        
+        print(f"📂 Загружен кэш: {cache_stats['processed_files']} файлов, {cache_stats['tested_keys']} ключей")
 
     def ensure_files_exist(self):
         """
@@ -125,48 +128,23 @@ class EnhancedMultiProviderGitHubScanner:
 
     def save_cache(self):
         """
-        Сохраняет кэш обработанных файлов и протестированных ключей
+        Сохраняет кэш обработанных файлов и протестированных ключей (backward compatibility)
         """
-        try:
-            cache_data = {
-                'processed_files': list(self.processed_files),
-                'tested_keys': list(self.tested_keys),
-                'last_updated': datetime.now().isoformat()
-            }
-            
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, indent=2, ensure_ascii=False)
-                
-        except Exception as e:
-            print(f"⚠️ Ошибка сохранения кэша: {e}")
+        self.cache_manager.save_cache()
 
     def clear_cache(self):
         """
-        Очищает кэш (удаляет файлы кэша)
+        Очищает кэш (backward compatibility)
         """
-        try:
-            if os.path.exists(self.cache_file):
-                os.remove(self.cache_file)
-            if os.path.exists(self.processed_repos_file):
-                os.remove(self.processed_repos_file)
-            
-            self.processed_files = set()
-            self.tested_keys = set()
-            print("🗑️ Кэш очищен")
-            
-        except Exception as e:
-            print(f"⚠️ Ошибка очистки кэша: {e}")
+        self.cache_manager.clear_cache()
+        self.processed_files = set()
+        self.tested_keys = set()
 
     def get_cache_stats(self):
         """
-        Возвращает статистику кэша
+        Возвращает статистику кэша (backward compatibility)
         """
-        return {
-            'processed_files': len(self.processed_files),
-            'tested_keys': len(self.tested_keys),
-            'cache_file_exists': os.path.exists(self.cache_file),
-            'cache_file_size': os.path.getsize(self.cache_file) if os.path.exists(self.cache_file) else 0
-        }
+        return self.cache_manager.get_stats()
 
     def test_validation_function(self, test_key: str) -> bool:
         """
@@ -491,112 +469,34 @@ class EnhancedMultiProviderGitHubScanner:
 
     def validate_openai_key(self, api_key: str) -> bool:
         """
-        Улучшенная валидация API ключа OpenAI
+        Улучшенная валидация API ключа OpenAI (backward compatibility)
         """
-        try:
-            client = OpenAI(api_key=api_key)
-            response = client.models.list()
-            
-            if response and hasattr(response, 'data'):
-                return len(response.data) > 0
-                
-        except Exception as e:
-            error_str = str(e).lower()
-            if any(err in error_str for err in ['invalid api key', 'invalid_api_key', 'unauthorized', 'incorrect api key']):
-                return False
-            elif any(err in error_str for err in ['quota', 'rate limit', 'billing']):
-                print(f"    Ключ валидный, но есть ограничения: {error_str}")
-                return True
-            else:
-                print(f"    Неизвестная ошибка: {error_str}")
-                
+        validator = self.validator_factory.create_validator('openai')
+        if validator:
+            return validator.validate_sync(api_key)
         return False
 
     def validate_anthropic_key(self, api_key: str) -> bool:
         """
-        Валидация API ключа Anthropic (Claude)
+        Валидация API ключа Anthropic (Claude) (backward compatibility)
         """
-        try:
-            url = "https://api.anthropic.com/v1/messages"
-            headers = {
-                'x-api-key': api_key,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json'
-            }
-            
-            # Минимальный тестовый запрос
-            data = {
-                'model': 'claude-3-haiku-20240307',
-                'max_tokens': 1,
-                'messages': [
-                    {'role': 'user', 'content': 'Hi'}
-                ]
-            }
-            
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-            
-            if response.status_code == 200:
-                return True
-            elif response.status_code == 401:
-                return False
-            elif response.status_code in [429, 503]:  # Rate limit или недостаток кредитов
-                print(f"    Ключ валидный, но есть ограничения: {response.status_code}")
-                return True
-            else:
-                print(f"    Неожиданный статус Anthropic API: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            error_str = str(e).lower()
-            if any(err in error_str for err in ['invalid api key', 'unauthorized']):
-                return False
-            elif any(err in error_str for err in ['quota', 'rate limit', 'billing']):
-                print(f"    Ключ валидный, но есть ограничения: {error_str}")
-                return True
-            else:
-                print(f"    Ошибка валидации Anthropic: {error_str}")
-                return False
+        validator = self.validator_factory.create_validator('anthropic')
+        if validator:
+            return validator.validate_sync(api_key)
+        return False
 
     def validate_google_gemini_key(self, api_key: str) -> bool:
         """
-        Валидация API ключа Google Gemini
+        Валидация API ключа Google Gemini (backward compatibility)
         """
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1/models?key={api_key}"
-            
-            response = requests.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                # Проверяем что есть модели в ответе
-                return 'models' in data and len(data.get('models', [])) > 0
-            elif response.status_code == 403:
-                # Возможно ключ валиден, но нет доступа к конкретному API
-                print(f"    Google API возвратил 403 - возможно валидный ключ без прав доступа")
-                return True
-            elif response.status_code == 401:
-                return False
-            elif response.status_code in [429, 503]:  # Rate limit
-                print(f"    Ключ валидный, но есть ограничения: {response.status_code}")
-                return True
-            else:
-                print(f"    Неожиданный статус Google API: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            error_str = str(e).lower()
-            if any(err in error_str for err in ['invalid api key', 'unauthorized']):
-                return False
-            elif any(err in error_str for err in ['quota', 'rate limit', 'billing']):
-                print(f"    Ключ валидный, но есть ограничения: {error_str}")
-                return True
-            else:
-                print(f"    Ошибка валидации Google: {error_str}")
-                return False
+        validator = self.validator_factory.create_validator('google_gemini')
+        if validator:
+            return validator.validate_sync(api_key)
+        return False
 
     def validate_api_key(self, api_key: str, provider: str) -> bool:
         """
-        Универсальный метод валидации API ключа в зависимости от провайдера
+        Универсальный метод валидации API ключа в зависимости от провайдера (backward compatibility)
         
         Args:
             api_key: API-ключ для валидации
@@ -605,12 +505,9 @@ class EnhancedMultiProviderGitHubScanner:
         Returns:
             bool: True если ключ валидный
         """
-        if provider == 'openai':
-            return self.validate_openai_key(api_key)
-        elif provider == 'anthropic':
-            return self.validate_anthropic_key(api_key)
-        elif provider == 'google_gemini':
-            return self.validate_google_gemini_key(api_key)
+        validator = self.validator_factory.create_validator(provider)
+        if validator:
+            return validator.validate_sync(api_key)
         else:
             print(f"⚠️ Неизвестный провайдер для валидации: {provider}")
             return False
@@ -836,7 +733,7 @@ class EnhancedMultiProviderGitHubScanner:
 
     def identify_provider(self, api_key: str) -> Optional[str]:
         """
-        Идентифицирует провайдера по формату API-ключа
+        Идентифицирует провайдера по формату API-ключа (backward compatibility)
         
         Args:
             api_key: API-ключ для идентификации
@@ -844,20 +741,7 @@ class EnhancedMultiProviderGitHubScanner:
         Returns:
             str: Название провайдера или None если не удалось идентифицировать
         """
-        # Проверяем в порядке от более специфичных к менее специфичным
-        # 1. Сначала Google Gemini (самый специфичный - начинается с AIza)
-        if api_key.startswith('AIza'):
-            return 'google_gemini'
-        
-        # 2. Затем Anthropic (начинается с sk-ant-)
-        if api_key.startswith('sk-ant-'):
-            return 'anthropic'
-        
-        # 3. Последним OpenAI (все остальные sk-)
-        if api_key.startswith('sk-'):
-            return 'openai'
-        
-        return None
+        return self.validator_factory.identify_provider(api_key)
 
     def load_all_valid_keys(self):
         """
